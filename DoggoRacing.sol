@@ -40,8 +40,8 @@ contract DoggoRacing{
 	event QueueJoined(uint256 queueTypeId, uint256 queueId, uint256 doggoId);
 	event QueueClosed(uint256 queueTypeId, uint256 queueId, uint256 closingBlockNumber);
 	event QueueResolved(uint256 queueTypeId, uint256 queueId);
-	event RaceCreated(uint256 raceIndex, uint256 queueId, int256 [4] doggosInRace, uint8 numDoggos,  uint256 now);
-	event RaceResolved(uint256 queueTypeId, uint256 queueId, uint256 raceId, int256 [4] doggosInRace, int256 [4] doggoSpeeds, uint8 numDoggos, address winner);
+	event RaceCreated(uint256 raceIndex, uint256 queueId, uint256 [4] doggosInRace, uint8 numDoggos,  uint256 now);
+	event RaceResolved(uint256 queueTypeId, uint256 queueId, uint256 raceId, uint256 [4] doggosInRace, int256 [4] doggoSpeeds, uint8 numDoggos, address winner);
 	event RaceWinningsCollected(uint256 raceId, address winner, uint256 user_winnings);
 	
 	uint256 queueIndex = 1; //Id of next queue to be created, starts at 1 since 0 is reserved for no queue
@@ -54,6 +54,8 @@ contract DoggoRacing{
 	mapping (uint256 => uint256) doggoIdToQueueId; //mapping from doggoId to current queueId
 	mapping (address => RaceAccount) addressToRaceAccount; //mapping from user address to his RaceAccount 
 	uint256 ONE_ETH = 1000000000000000000;
+	uint256 resolve_fund = 0; //made up of fees on join queues, returned to whomever runs resolve queue to reinburse for gas cost
+	uint256 JOIN_FEE = 2;// out of 1000 
 
 
 	//Deploy using the DoggoMain contract address
@@ -67,15 +69,15 @@ contract DoggoRacing{
 		queueTypeIdToQueueType[1] = queueType1;
 		QueueType memory queueType2 = QueueType(2, 1800, ONE_ETH/4, 2, 0);
 		queueTypeIdToQueueType[2] = queueType2;
-		QueueType memory queueType3 = QueueType(3, 21600, 0, 3, 0);
+		QueueType memory queueType3 = QueueType(3, 21600, ONE_ETH/4, 3, 0);
 		queueTypeIdToQueueType[3] = queueType3;
-		QueueType memory queueType4 = QueueType(4, 21600, ONE_ETH/1000, 4, 0);
+		QueueType memory queueType4 = QueueType(4, 21600, ONE_ETH/100, 4, 0);
 		queueTypeIdToQueueType[4] = queueType4;
-		QueueType memory queueType5 = QueueType(5, 21600, ONE_ETH/100, 4, 0);
+		QueueType memory queueType5 = QueueType(5, 21600, ONE_ETH/10, 4, 0);
 		queueTypeIdToQueueType[5] = queueType5;
-		QueueType memory queueType6 = QueueType(6, 21600, ONE_ETH/10, 4, 0);
+		QueueType memory queueType6 = QueueType(6, 21600, ONE_ETH/2, 4, 0);
 		queueTypeIdToQueueType[6] = queueType6;
-		QueueType memory queueType7 = QueueType(7, 21600, ONE_ETH/2, 4, 0);
+		QueueType memory queueType7 = QueueType(7, 21600, ONE_ETH, 4, 0);
 		queueTypeIdToQueueType[7] = queueType7;
 		QueueType memory queueType8 = QueueType(8, 21600, 0, 4, 0);
 		queueTypeIdToQueueType[8] = queueType8;
@@ -101,8 +103,7 @@ contract DoggoRacing{
 	struct Race{
 		uint256 raceId;
 		uint256 queueId;
-		int256 [4] doggosInRace;
-		address [4] accountsInRace;
+		uint256 [4] doggosInRace;
 		int256 [4] doggoSpeeds;
 		uint8 numDoggos;
 		address winner;
@@ -121,9 +122,9 @@ contract DoggoRacing{
 	}
 
 	//return info about a race	
-	function getRace(uint256 raceId) view public returns (uint256, uint256, int256 [4], address [4], int256 [4], uint8, address, uint256, bool){
+	function getRace(uint256 raceId) view public returns (uint256, uint256, uint256 [4], int256 [4], uint8, address, uint256, bool){
 		Race memory r = raceIdToRace[raceId];
-		return(r.raceId, r.queueId, r.doggosInRace, r.accountsInRace, r.doggoSpeeds, r.numDoggos, r.winner, r.timeStamp, r.isWithdrawn);
+		return(r.raceId, r.queueId, r.doggosInRace, r.doggoSpeeds, r.numDoggos, r.winner, r.timeStamp, r.isWithdrawn);
 	}
 
 	function getQueueIdFromDoggoId(uint256 doggoId) view public returns(uint256){
@@ -168,11 +169,13 @@ contract DoggoRacing{
 		require(doggoMainContract.ownerOf(doggoId) == msg.sender);
 		require(doggoMainContract.getModeFromDoggoId(doggoId) == 0); //no racing allowed for doggos on Auction
 		Queue storage q = queueIdToQueue[queueId];
-		require(q.contestants.length <= 256); // hard cap of 256 participants in any given queue. Limits gas cost of resolveQueue transaction
+		require(q.contestants.length <= 50); // hard cap of 256 participants in any given queue. Limits gas cost of resolveQueue transaction
 		require(q.status == 1);
 		QueueType memory qt = queueTypeIdToQueueType[q.queueTypeId];
 		require(now < (q.timeQueueCreated + qt.duration)); //make sure queue is still open
-		require(msg.value >= qt.ticketPrice);
+		require(msg.value >= (qt.ticketPrice * (1000+JOIN_FEE)/1000));
+		resolve_fund += (qt.ticketPrice * JOIN_FEE)/1000;//put the join fee into the resolve_fund
+
 		//sets doggo mode to racing preventing same dog from participating in multiple queues at the same time
 		doggoMainContract.setModeByDoggoId(doggoId, 2);
 		doggoIdToQueueId[doggoId] = q.queueId;
@@ -213,10 +216,9 @@ contract DoggoRacing{
 		require(q.status == 2);
 		require(block.number >= (q.closingBlockNumber + 3));//have to wait at least 3 blocks between closeQueue and resolveQueue to ensure randomness on blockhash
 		QueueType memory qt  = queueTypeIdToQueueType[q.queueTypeId];
-		
+		uint256 [] memory contestants = q.contestants;	
 
 		//shuffle contestants
-		uint256 [] memory contestants = q.contestants;
                 bytes32 b = block.blockhash(block.number - 1);
 		uint256 j = 0;               
 		uint256 i = 0;
@@ -228,7 +230,7 @@ contract DoggoRacing{
 				rand_num = uint8(b[j]) % i;
 				contestants[i] = contestants[rand_num];
 				contestants[rand_num] = temp;
-				if(j > 31){
+				if(j >= 31){
 					j = 0;
 				}
 				else{
@@ -237,57 +239,48 @@ contract DoggoRacing{
 			}
 				
 			//Put contestants in subgroups that are used to initilize races
-			int256 [4] memory doggosInRace;
+			uint256 [4] memory doggosInRace;
 			uint256 doggoId;
 			for(i = 0; i < ((contestants.length)/qt.doggosPerRace); i++){
 				for(j = 0; j < qt.doggosPerRace; j++){
 					doggoId = contestants[i*qt.doggosPerRace + j];	
-					doggosInRace[j] = int256(doggoId);	
-					doggoIdToQueueId[doggoId] = 0; //doggo is no longer in queue after being placed in a race
+					doggosInRace[j] = doggoId;	
+					//doggoIdToQueueId[doggoId] = 0; //doggo is no longer in queue after being placed in a race
 				}
-
-				//pad any empty slots in race with -1
-				for(j = qt.doggosPerRace; j < 4; j++){
-					doggosInRace[j] = -1;	
-				}	
 				createRace(doggosInRace, queueId, qt.doggosPerRace, b);
 			}
 				
 				
 			//place remaining dogs that don't fit into a full race of the size qt.doggosPerRace
 			//if a single dog remains he is placed in a 1 man race where he can get a refund
+			uint256 [4] memory remDoggosInRace;
 			uint256 numRemainderDoggos =  contestants.length % qt.doggosPerRace;
 			if(numRemainderDoggos > 0){
 				for(i = 0; i < numRemainderDoggos; i++){
 					doggoId = contestants[contestants.length -1 -i];
-					doggosInRace[i] = int256(doggoId);
-					doggoIdToQueueId[doggoId] = 0; //doggo is no longer in queue after being placed in a race
+					remDoggosInRace[i] = doggoId;
+					//doggoIdToQueueId[doggoId] = 0; //doggo is no longer in queue after being placed in a race
 				
 				}
-				for(j = numRemainderDoggos; j < 4; j++){
-					doggosInRace[j] = -1;	
-				}	
-				createRace(doggosInRace, queueId, uint8(numRemainderDoggos), b);
+				createRace(remDoggosInRace, queueId, uint8(numRemainderDoggos), b);
 			}
 		}
 		
 		q.status = 3;// set status to resolved, allows for new queue creation of the same type
+		msg.sender.transfer((qt.ticketPrice* JOIN_FEE * contestants.length)/1000);//funds from the resolve_fund reinburses whomever resolves queue
+		resolve_fund -= (qt.ticketPrice * JOIN_FEE * contestants.length)/1000;
 		QueueResolved(qt.queueTypeId, q.queueId);
 		
 	}
 	
 
-	function createRace(int256 [4] doggosInRace, uint256 queueId, uint8 numDoggos, bytes32 blockhash) private{
+	function createRace(uint256 [4] doggosInRace, uint256 queueId, uint8 numDoggos, bytes32 blockhash) private{
 		int [4] memory speeds;
 		address winner;
-		address [4] memory accountsInRace;
-		for(uint i = 0; i < numDoggos; i++){
-			accountsInRace[i] = doggoMainContract.ownerOf(uint256(doggosInRace[i]));
-		}
-		Race memory newRace = Race(raceIndex, queueId, doggosInRace, accountsInRace, speeds, numDoggos, winner, blockhash, now, false);
+		Race memory newRace = Race(raceIndex, queueId, doggosInRace, speeds, numDoggos, winner, blockhash, now, false);
 		raceIdToRace[raceIndex] = newRace;
-		raceIndex++;
 		RaceCreated(raceIndex, queueId, doggosInRace, numDoggos, now);
+		raceIndex++;
 	}
 	
 
@@ -295,13 +288,14 @@ contract DoggoRacing{
 	function releaseRabbit(uint256 raceId) public{
 		Race storage r = raceIdToRace[raceId];
 		require(r.queueId != 0);//make sure race exists
+		require(r.winner == address(0)); //require this has not already been called
 		Queue memory q = queueIdToQueue[r.queueId];
 		QueueType memory qt  = queueTypeIdToQueueType[q.queueTypeId];
 		
 		int256 topSpeed = -2**255+1;
 		uint256 fastestDoggoId;
 		for(uint8 i = 0; i < qt.doggosPerRace; i++){
-			if(r.doggosInRace[i] != -1){//doggo 0 cannot race atm
+			if(r.doggosInRace[i] != 0){//doggo 0 cannot race atm
 				bytes32 dna = doggoMainContract.getDNAFromDoggoId(uint256(r.doggosInRace[i]));	
 				r.doggoSpeeds[i] = radarContract.getDoggoSpeed(dna, r.blockhash);
 				if(r.doggoSpeeds[i] > topSpeed){
@@ -313,6 +307,11 @@ contract DoggoRacing{
 			}
 		}
 		r.winner = doggoMainContract.ownerOf(fastestDoggoId);
+		//update race account stats
+		RaceAccount storage ra = addressToRaceAccount[r.winner];
+		uint256 total_winnings = r.numDoggos * qt.ticketPrice;
+		ra.ETHWon += total_winnings;
+		ra.numRacesWon += 1;
 		RaceResolved(qt.queueTypeId, q.queueId, r.raceId, r.doggosInRace, r.doggoSpeeds, r.numDoggos, r.winner);
 	}
 	
@@ -325,11 +324,6 @@ contract DoggoRacing{
 		Queue memory q = queueIdToQueue[r.queueId];
 		QueueType memory qt = queueTypeIdToQueueType[q.queueTypeId]; 
 		uint256 total_winnings = r.numDoggos * qt.ticketPrice;
-		
-		//update race account stats
-		RaceAccount storage ra = addressToRaceAccount[msg.sender];
-		ra.ETHWon += total_winnings;
-		ra.numRacesWon += 1;
 
 		r.isWithdrawn = true;
 		doggoMainContract.getCFOAddress().transfer(2*total_winnings/100); //2% Fee
